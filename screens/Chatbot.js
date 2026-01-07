@@ -15,7 +15,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { HUGGING_FACE_TOKEN } from '@env';
 
 const HUGGING_FACE_API = 'https://router.huggingface.co/v1/chat/completions';
-const HF_TOKEN = 'YOUR_HUGGING_FACE_TOKEN_HERE';
+const HF_TOKEN = HUGGING_FACE_TOKEN;
 const model = 'deepseek-ai/DeepSeek-V3.2:novita';
 
 const Chatbot = () => {

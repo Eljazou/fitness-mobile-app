@@ -52,8 +52,20 @@ const Stats = () => {
   const [streak, setStreak] = useState(0);
   const [weeklyData, setWeeklyData] = useState([]);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
   const [selectedMetric, setSelectedMetric] = useState('');
   const [metricValue, setMetricValue] = useState('');
+  const [isFirstTime, setIsFirstTime] = useState(false);
+
+  // Form data pour le profil
+  const [formData, setFormData] = useState({
+    weight: '',
+    height: '',
+    age: '',
+    gender: 'male',
+    activityLevel: 'moderate',
+    goal: 'maintain'
+  });
 
   const auth = getAuth();
   const db = getFirestore();
@@ -70,10 +82,70 @@ const Stats = () => {
     try {
       const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
       if (userDoc.exists()) {
-        setUserData(userDoc.data());
+        const data = userDoc.data();
+        setUserData(data);
+        setFormData({
+          weight: data.weight?.toString() || '',
+          height: data.height?.toString() || '',
+          age: data.age?.toString() || '',
+          gender: data.gender || 'male',
+          activityLevel: data.activityLevel || 'moderate',
+          goal: data.goal || 'maintain'
+        });
+      } else {
+        // Premier usage - afficher le modal de profil
+        setIsFirstTime(true);
+        setShowProfileModal(true);
       }
     } catch (error) {
       console.error('Error loading user data:', error);
+    }
+  };
+
+  const saveUserProfile = async () => {
+    const weight = parseFloat(formData.weight);
+    const height = parseFloat(formData.height);
+    const age = parseInt(formData.age);
+
+    if (!weight || !height || !age) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    if (weight < 30 || weight > 300) {
+      Alert.alert('Error', 'Please enter a valid weight (30-300 kg)');
+      return;
+    }
+
+    if (height < 100 || height > 250) {
+      Alert.alert('Error', 'Please enter a valid height (100-250 cm)');
+      return;
+    }
+
+    if (age < 10 || age > 120) {
+      Alert.alert('Error', 'Please enter a valid age (10-120 years)');
+      return;
+    }
+
+    try {
+      const newUserData = {
+        weight,
+        height,
+        age,
+        gender: formData.gender,
+        activityLevel: formData.activityLevel,
+        goal: formData.goal,
+        updatedAt: serverTimestamp()
+      };
+
+      await setDoc(doc(db, 'users', currentUser.uid), newUserData, { merge: true });
+      setUserData(newUserData);
+      setShowProfileModal(false);
+      setIsFirstTime(false);
+      Alert.alert('Success', 'Profile updated successfully!');
+    } catch (error) {
+      console.error('Error saving profile:', error);
+      Alert.alert('Error', 'Failed to save profile');
     }
   };
 
@@ -95,20 +167,20 @@ const Stats = () => {
       const sevenDaysAgo = new Date();
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
       
-      const q = query(
+      const statsQuery = query(
         collection(db, 'stats'),
-        where('userId', '==', currentUser.uid),
-        orderBy('date', 'desc'),
-        limit(7)
+        where('userId', '==', currentUser.uid)
       );
       
-      const querySnapshot = await getDocs(q);
+      const querySnapshot = await getDocs(statsQuery);
       const data = [];
       querySnapshot.forEach((doc) => {
         data.push(doc.data());
       });
       
-      setWeeklyData(data.reverse());
+      // Trier par date et prendre les 7 derniers
+      const sortedData = data.sort((a, b) => new Date(a.date) - new Date(b.date)).slice(-7);
+      setWeeklyData(sortedData);
     } catch (error) {
       console.error('Error loading weekly data:', error);
     }
@@ -116,28 +188,39 @@ const Stats = () => {
 
   const calculateStreak = async () => {
     try {
-      const q = query(
+      const statsQuery = query(
         collection(db, 'stats'),
-        where('userId', '==', currentUser.uid),
-        orderBy('date', 'desc')
+        where('userId', '==', currentUser.uid)
       );
       
-      const querySnapshot = await getDocs(q);
+      const querySnapshot = await getDocs(statsQuery);
+      const statsData = [];
+      querySnapshot.forEach((doc) => {
+        statsData.push(doc.data());
+      });
+
+      // Trier par date décroissante
+      statsData.sort((a, b) => new Date(b.date) - new Date(a.date));
+      
       let currentStreak = 0;
       let lastDate = new Date();
+      lastDate.setHours(0, 0, 0, 0);
       
-      querySnapshot.forEach((doc) => {
-        const data = doc.data();
-        const statDate = new Date(data.date);
+      for (let stat of statsData) {
+        const statDate = new Date(stat.date);
+        statDate.setHours(0, 0, 0, 0);
+        
         const diffDays = Math.floor((lastDate - statDate) / (1000 * 60 * 60 * 24));
         
-        if (diffDays <= 1) {
-          if (data.workoutMinutes > 0 || data.calories > 0) {
+        if (diffDays === 0 || diffDays === 1) {
+          if (stat.workoutMinutes > 0 || stat.calories > 0) {
             currentStreak++;
             lastDate = statDate;
           }
+        } else {
+          break;
         }
-      });
+      }
       
       setStreak(currentStreak);
     } catch (error) {
@@ -171,6 +254,7 @@ const Stats = () => {
 
   const getCalorieGoal = () => {
     const tdee = calculateTDEE();
+    if (tdee === 0) return 2000; // Default
     
     switch(userData.goal) {
       case 'lose': return tdee - 500;
@@ -241,6 +325,8 @@ const Stats = () => {
   };
 
   const renderWeeklyChart = () => {
+    if (weeklyData.length === 0) return null;
+    
     const maxCalories = Math.max(...weeklyData.map(d => d.calories || 0), getCalorieGoal());
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     
@@ -269,7 +355,7 @@ const Stats = () => {
         
         <View style={styles.goalLine}>
           <View style={styles.dashedLine} />
-          <Text style={styles.goalLineText}>Goal: {getCalorieGoal()}</Text>
+          <Text style={styles.goalLineText}>Goal: {getCalorieGoal()} kcal</Text>
         </View>
       </View>
     );
@@ -283,7 +369,15 @@ const Stats = () => {
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
       >
-        <Text style={styles.headerTitle}>📊 My Stats</Text>
+        <View style={styles.headerContent}>
+          <Text style={styles.headerTitle}>📊 My Stats</Text>
+          <TouchableOpacity 
+            style={styles.settingsButton}
+            onPress={() => setShowProfileModal(true)}
+          >
+            <Ionicons name="settings" size={24} color="#fff" />
+          </TouchableOpacity>
+        </View>
         <Text style={styles.headerSubtitle}>Track your fitness journey</Text>
       </LinearGradient>
 
@@ -310,7 +404,7 @@ const Stats = () => {
           <Text style={styles.sectionTitle}>Today's Nutrition</Text>
           <View style={styles.statsGrid}>
             {renderStatCard('Calories', dailyStats.calories, getCalorieGoal(), ' kcal', 'flame', '#ef4444', 'calories')}
-            {renderStatCard('Protein', dailyStats.protein, Math.round(userData.weight * 2), 'g', 'nutrition', '#10b981', 'protein')}
+            {renderStatCard('Protein', dailyStats.protein, Math.round(userData.weight * 2 || 140), 'g', 'nutrition', '#10b981', 'protein')}
             {renderStatCard('Carbs', dailyStats.carbs, Math.round(getCalorieGoal() * 0.4 / 4), 'g', 'pizza', '#f59e0b', 'carbs')}
             {renderStatCard('Fats', dailyStats.fats, Math.round(getCalorieGoal() * 0.3 / 9), 'g', 'water', '#06b6d4', 'fats')}
           </View>
@@ -327,10 +421,152 @@ const Stats = () => {
         </View>
 
         {/* Weekly Chart */}
-        {weeklyData.length > 0 && renderWeeklyChart()}
+        {renderWeeklyChart()}
 
         <View style={{ height: 40 }} />
       </ScrollView>
+
+      {/* Profile Modal */}
+      <Modal
+        visible={showProfileModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => !isFirstTime && setShowProfileModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.profileModalContent}>
+            <Text style={styles.profileModalTitle}>
+              {isFirstTime ? '👋 Welcome! Setup Your Profile' : '⚙️ Edit Profile'}
+            </Text>
+            
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Weight (kg)</Text>
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="70"
+                  keyboardType="numeric"
+                  value={formData.weight}
+                  onChangeText={(text) => setFormData({...formData, weight: text})}
+                />
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Height (cm)</Text>
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="170"
+                  keyboardType="numeric"
+                  value={formData.height}
+                  onChangeText={(text) => setFormData({...formData, height: text})}
+                />
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Age</Text>
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="25"
+                  keyboardType="numeric"
+                  value={formData.age}
+                  onChangeText={(text) => setFormData({...formData, age: text})}
+                />
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Gender</Text>
+                <View style={styles.optionsRow}>
+                  <TouchableOpacity
+                    style={[styles.optionButton, formData.gender === 'male' && styles.optionButtonActive]}
+                    onPress={() => setFormData({...formData, gender: 'male'})}
+                  >
+                    <Text style={[styles.optionText, formData.gender === 'male' && styles.optionTextActive]}>Male</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.optionButton, formData.gender === 'female' && styles.optionButtonActive]}
+                    onPress={() => setFormData({...formData, gender: 'female'})}
+                  >
+                    <Text style={[styles.optionText, formData.gender === 'female' && styles.optionTextActive]}>Female</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Activity Level</Text>
+                <TouchableOpacity
+                  style={[styles.selectButton, formData.activityLevel === 'sedentary' && styles.selectButtonActive]}
+                  onPress={() => setFormData({...formData, activityLevel: 'sedentary'})}
+                >
+                  <Text style={styles.selectButtonText}>Sedentary (little/no exercise)</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.selectButton, formData.activityLevel === 'light' && styles.selectButtonActive]}
+                  onPress={() => setFormData({...formData, activityLevel: 'light'})}
+                >
+                  <Text style={styles.selectButtonText}>Light (1-3 days/week)</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.selectButton, formData.activityLevel === 'moderate' && styles.selectButtonActive]}
+                  onPress={() => setFormData({...formData, activityLevel: 'moderate'})}
+                >
+                  <Text style={styles.selectButtonText}>Moderate (3-5 days/week)</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.selectButton, formData.activityLevel === 'active' && styles.selectButtonActive]}
+                  onPress={() => setFormData({...formData, activityLevel: 'active'})}
+                >
+                  <Text style={styles.selectButtonText}>Active (6-7 days/week)</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Goal</Text>
+                <TouchableOpacity
+                  style={[styles.selectButton, formData.goal === 'lose' && styles.selectButtonActive]}
+                  onPress={() => setFormData({...formData, goal: 'lose'})}
+                >
+                  <Text style={styles.selectButtonText}>Lose Weight (-500 cal)</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.selectButton, formData.goal === 'maintain' && styles.selectButtonActive]}
+                  onPress={() => setFormData({...formData, goal: 'maintain'})}
+                >
+                  <Text style={styles.selectButtonText}>Maintain Weight</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.selectButton, formData.goal === 'gain' && styles.selectButtonActive]}
+                  onPress={() => setFormData({...formData, goal: 'gain'})}
+                >
+                  <Text style={styles.selectButtonText}>Gain Muscle (+500 cal)</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+
+            <View style={styles.profileModalButtons}>
+              {!isFirstTime && (
+                <TouchableOpacity
+                  style={styles.cancelProfileButton}
+                  onPress={() => setShowProfileModal(false)}
+                >
+                  <Text style={styles.cancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+              )}
+              
+              <TouchableOpacity
+                style={[styles.saveProfileButton, isFirstTime && styles.saveProfileButtonFull]}
+                onPress={saveUserProfile}
+              >
+                <LinearGradient
+                  colors={['#667eea', '#764ba2']}
+                  style={styles.saveButtonGradient}
+                >
+                  <Text style={styles.saveButtonText}>Save Profile</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Add Stat Modal */}
       <Modal
@@ -390,13 +626,20 @@ const styles = StyleSheet.create({
     paddingTop: 60,
     paddingBottom: 30,
     paddingHorizontal: 20,
+  },
+  headerContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: 5,
   },
   headerTitle: {
     fontSize: 28,
     fontWeight: 'bold',
     color: '#fff',
-    marginBottom: 5,
+  },
+  settingsButton: {
+    padding: 5,
   },
   headerSubtitle: {
     fontSize: 14,
@@ -607,6 +850,93 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: 'bold',
     fontSize: 16,
+  },
+  profileModalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 25,
+    width: width - 40,
+    maxHeight: '80%',
+  },
+  profileModalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  formGroup: {
+    marginBottom: 20,
+  },
+  formLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 10,
+  },
+  formInput: {
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 12,
+    padding: 15,
+    fontSize: 16,
+  },
+  optionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  optionButton: {
+    flex: 1,
+    padding: 15,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    alignItems: 'center',
+  },
+  optionButtonActive: {
+    backgroundColor: '#667eea',
+    borderColor: '#667eea',
+  },
+  optionText: {
+    color: '#666',
+    fontWeight: '600',
+  },
+  optionTextActive: {
+    color: '#fff',
+  },
+  selectButton: {
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    marginBottom: 8,
+  },
+  selectButtonActive: {
+    backgroundColor: '#667eea',
+    borderColor: '#667eea',
+  },
+  selectButtonText: {
+    color: '#666',
+    fontSize: 14,
+  },
+  profileModalButtons: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 20,
+  },
+  cancelProfileButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 12,
+  },
+  saveProfileButton: {
+    flex: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  saveProfileButtonFull: {
+    flex: 1,
   },
 });
 
